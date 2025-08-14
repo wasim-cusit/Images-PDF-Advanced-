@@ -19,7 +19,7 @@
     .btn{appearance:none; border:1px solid var(--border); background:var(--panel); color:var(--text);
          padding:8px 12px; border-radius:12px; cursor:pointer; transition:.2s transform,.2s background;
          font-weight:600; font-size:14px}
-    .btn:hover{transform:translateY(-1px)}
+    .btn:hover, .btn:focus{transform:translateY(-1px); outline:2px solid var(--accent); outline-offset:2px}
     .btn.primary{background:linear-gradient(180deg,var(--accent),#4b7df0); border:none; color:#071327}
     .btn.danger{background:linear-gradient(180deg,#ff8787,#ff6b6b); border:none; color:#2b0c0c}
     .row{display:grid; grid-template-columns:1fr 320px; gap:18px; padding:18px}
@@ -39,7 +39,7 @@
     .meta .small{display:flex; gap:6px}
     .icon-btn{background:transparent; border:1px solid var(--border); color:var(--text); border-radius:10px;
               padding:6px 8px; cursor:pointer; font-size:12px}
-    .icon-btn:hover{background:rgba(255,255,255,.04)}
+    .icon-btn:hover, .icon-btn:focus{background:rgba(255,255,255,.04); outline:none}
     .badge{position:absolute; top:6px; left:6px; background:rgba(0,0,0,.6); padding:4px 8px; border-radius:999px; font-size:12px}
 
     /* Side panel */
@@ -52,10 +52,15 @@
     }
     .footer-actions{display:flex; gap:10px; margin-top:12px}
     .progress{height:6px; background:#10163a; border-radius:999px; overflow:hidden; border:1px solid var(--border); margin-top:8px}
-    .bar{height:100%; width:0%}
+    .bar{height:100%; width:0%; background:linear-gradient(90deg,#6ea8fe,#7ee787); transition:width 0.2s ease}
 
     .ghost{opacity:.5} .dragging{outline:2px dashed var(--accent)}
     .sr{position:absolute; left:-10000px; top:auto; width:1px; height:1px; overflow:hidden;}
+    .loading{opacity:0.7; pointer-events:none; position:relative}
+    .loading::after{content:''; position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+                   width:16px; height:16px; border:2px solid var(--accent); border-radius:50%;
+                   border-top-color:transparent; animation:spin 1s linear infinite}
+    @keyframes spin{to{transform:translate(-50%,-50%) rotate(360deg)}}
   </style>
 </head>
 <body>
@@ -70,10 +75,10 @@
 
   <div class="row">
     <main>
-      <div class="drop" id="dropZone" aria-label="Drop images here">
+      <div class="drop" id="dropZone" aria-label="Drop images here" role="region">
         <div class="inner">
           <div>
-            <h2>Drop images here or click “Select images”</h2>
+            <h2>Drop images here or click "Select images"</h2>
             <div style="font-size:12px; color:var(--muted)">Tip: drag the ⠿ handle to reorder</div>
           </div>
           <div><span class="btn">Supported: JPG · PNG · WebP</span></div>
@@ -83,25 +88,25 @@
     </main>
 
     <aside class="panel" aria-label="PDF options">
-      <h3>PDF Options</h3>
+      <h3 id="pdfOptionsHeading">PDF Options</h3>
 
       <div class="group">
         <label for="size">Page size</label>
-        <select id="size">
+        <select id="size" aria-labelledby="pdfOptionsHeading size">
           <option value="a4" selected>A4</option>
           <option value="letter">Letter</option>
           <option value="legal">Legal</option>
         </select>
         <label for="orientation">Orientation</label>
-        <select id="orientation">
+        <select id="orientation" aria-labelledby="pdfOptionsHeading orientation">
           <option value="auto" selected>Auto (per image)</option>
           <option value="portrait">Portrait (all pages)</option>
           <option value="landscape">Landscape (all pages)</option>
         </select>
         <label for="margin">Margins (mm)</label>
-        <input id="margin" type="number" min="0" step="1" value="10" />
+        <input id="margin" type="number" min="0" step="1" value="10" aria-labelledby="pdfOptionsHeading margin" />
         <label for="fit">Fit</label>
-        <select id="fit">
+        <select id="fit" aria-labelledby="pdfOptionsHeading fit">
           <option value="width" selected>Fit to width</option>
           <option value="height">Fit to height</option>
           <option value="contain">Contain (keep all)</option>
@@ -111,9 +116,9 @@
 
       <div class="group">
         <label for="quality">JPEG quality (0.4–1)</label>
-        <input id="quality" type="number" min="0.4" max="1" step="0.1" value="0.92" />
+        <input id="quality" type="number" min="0.4" max="1" step="0.1" value="0.92" aria-labelledby="pdfOptionsHeading quality" />
         <label for="filename">File name</label>
-        <input id="filename" type="text" value="images.pdf" />
+        <input id="filename" type="text" value="images.pdf" aria-labelledby="pdfOptionsHeading filename" />
       </div>
 
       <div class="footer-actions">
@@ -124,13 +129,14 @@
     </aside>
   </div>
 
-  <!-- ✅ Load required libs WITHOUT integrity so they don't get blocked -->
+  <!-- Load required libs -->
   <script defer src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/jspdf@3.0.1/dist/jspdf.umd.min.js"></script>
 
   <!-- App -->
   <script>
   (function(){
+    // DOM Elements
     const fileInput   = document.getElementById('fileInput');
     const pickBtn     = document.getElementById('pickBtn');
     const clearBtn    = document.getElementById('clearBtn');
@@ -140,6 +146,7 @@
     const makePdfBtn2 = document.getElementById('makePdfBtn2');
     const bar         = document.getElementById('bar');
 
+    // PDF Options Elements
     const sizeSel       = document.getElementById('size');
     const orientationSel= document.getElementById('orientation');
     const marginInput   = document.getElementById('margin');
@@ -147,222 +154,393 @@
     const qualityInput  = document.getElementById('quality');
     const filenameInput = document.getElementById('filename');
 
-    // Internal state: id -> { id, dataURL, type, rotation }
+    // Constants
+    const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+    const SUPPORTED_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+
+    // State management
     const store = new Map();
     let idSeq = 1;
+    let isProcessing = false;
 
-    pickBtn.addEventListener('click', ()=> fileInput.click());
-    fileInput.addEventListener('change', (e)=> handleFiles(e.target.files));
-    clearBtn.addEventListener('click', () => { store.clear(); render(); });
+    // Event Listeners
+    pickBtn.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
+    clearBtn.addEventListener('click', clearAll);
 
-    // Drag & drop to add
-    ['dragenter','dragover'].forEach(evt =>
-      dropZone.addEventListener(evt, e => { e.preventDefault(); dropZone.style.borderColor = 'var(--accent)';})
+    // Drag & drop handlers
+    ['dragenter', 'dragover'].forEach(evt =>
+      dropZone.addEventListener(evt, highlightDropZone)
     );
-    ['dragleave','drop'].forEach(evt =>
-      dropZone.addEventListener(evt, e => { e.preventDefault(); dropZone.style.borderColor = 'var(--border)';})
+    ['dragleave', 'drop'].forEach(evt =>
+      dropZone.addEventListener(evt, unhighlightDropZone)
     );
-    dropZone.addEventListener('drop', e => {
-      const files = [...(e.dataTransfer?.files || [])].filter(f => f.type.startsWith('image/'));
-      if(files.length) handleFiles(files);
-    });
+    dropZone.addEventListener('drop', handleDrop);
 
-    // Sortable for reordering
-    const sortable = new Sortable(grid, {
-      animation: 150,
-      handle: '.handle',
-      ghostClass: 'ghost',
-      dragClass: 'dragging',
-    });
-
-    async function handleFiles(files){
-      for (const file of files){
-        if(!file.type.startsWith('image/')) continue;
-        const dataURL = await fileToDataURL(file);
-        const rec = { id: String(idSeq++), dataURL, type: file.type || 'image/jpeg', rotation: 0 };
-        store.set(rec.id, rec);
-      }
-      render();
+    // Initialize Sortable for drag-and-drop reordering
+    let sortable;
+    function initSortable() {
+      sortable = new Sortable(grid, {
+        animation: 150,
+        handle: '.handle',
+        ghostClass: 'ghost',
+        dragClass: 'dragging',
+      });
     }
 
-    function fileToDataURL(file){
-      return new Promise((res, rej)=>{
+    // File handling
+    async function handleFiles(files) {
+      if (!files || files.length === 0) return;
+      
+      try {
+        setLoadingState(true);
+        const validFiles = Array.from(files)
+          .filter(file => SUPPORTED_TYPES.includes(file.type) && file.size <= MAX_FILE_SIZE);
+        
+        if (validFiles.length === 0) {
+          alert('Please select valid image files (JPG, PNG, WebP) under 10MB');
+          return;
+        }
+
+        for (const file of validFiles) {
+          try {
+            const dataURL = await fileToDataURL(file);
+            const rec = { 
+              id: String(idSeq++), 
+              dataURL, 
+              type: file.type || 'image/jpeg', 
+              rotation: 0 
+            };
+            store.set(rec.id, rec);
+          } catch (error) {
+            console.error('Error processing file:', file.name, error);
+          }
+        }
+        
+        render();
+      } catch (error) {
+        console.error('Error handling files:', error);
+        alert('An error occurred while processing files');
+      } finally {
+        setLoadingState(false);
+      }
+    }
+
+    function fileToDataURL(file) {
+      return new Promise((resolve, reject) => {
+        if (file.size > MAX_FILE_SIZE) {
+          reject(new Error('File too large'));
+          return;
+        }
+
         const fr = new FileReader();
-        fr.onload = () => res(fr.result);
-        fr.onerror = rej;
+        fr.onload = () => resolve(fr.result);
+        fr.onerror = () => reject(new Error('Failed to read file'));
         fr.readAsDataURL(file);
       });
     }
 
-    function render(){
+    function handleDrop(e) {
+      e.preventDefault();
+      const files = Array.from(e.dataTransfer?.files || [])
+        .filter(f => SUPPORTED_TYPES.includes(f.type) && f.size <= MAX_FILE_SIZE);
+      
+      if (files.length > 0) {
+        handleFiles(files);
+      } else {
+        alert('Please drop valid image files (JPG, PNG, WebP) under 10MB');
+      }
+    }
+
+    function highlightDropZone(e) {
+      e.preventDefault();
+      dropZone.style.borderColor = 'var(--accent)';
+    }
+
+    function unhighlightDropZone(e) {
+      e.preventDefault();
+      dropZone.style.borderColor = 'var(--border)';
+    }
+
+    function clearAll() {
+      if (store.size === 0) return;
+      if (confirm('Are you sure you want to remove all images?')) {
+        store.clear();
+        render();
+      }
+    }
+
+    // Rendering
+    function render() {
       grid.innerHTML = '';
+      
+      if (store.size === 0) {
+        grid.style.minHeight = '100px';
+        return;
+      }
+
+      grid.style.minHeight = '0';
       let i = 1;
-      for (const rec of store.values()){
+      
+      for (const rec of store.values()) {
         const card = document.createElement('div');
         card.className = 'card';
         card.dataset.id = rec.id;
+        card.setAttribute('aria-label', `Image ${i}`);
 
+        // Badge with position number
         const badge = document.createElement('div');
-        badge.className = 'badge'; badge.textContent = i++;
+        badge.className = 'badge';
+        badge.textContent = i++;
         card.appendChild(badge);
 
+        // Thumbnail container
         const thumb = document.createElement('div');
         thumb.className = 'thumb';
         const img = document.createElement('img');
         img.src = rec.dataURL;
+        img.alt = '';
         img.style.setProperty('--rot', rec.rotation + 'deg');
         thumb.appendChild(img);
         card.appendChild(thumb);
 
+        // Metadata and controls
         const meta = document.createElement('div');
         meta.className = 'meta';
 
+        // Drag handle
         const handle = document.createElement('div');
         handle.className = 'handle';
         handle.title = 'Drag to reorder';
         handle.textContent = '⠿';
+        handle.setAttribute('aria-hidden', 'true');
         meta.appendChild(handle);
 
+        // Control buttons
         const small = document.createElement('div');
         small.className = 'small';
 
+        // Rotate left button
         const rotL = document.createElement('button');
         rotL.className = 'icon-btn';
         rotL.title = 'Rotate -90°';
         rotL.textContent = '⟲';
-        rotL.addEventListener('click', ()=>{ rec.rotation = (rec.rotation - 90) % 360; render(); });
+        rotL.setAttribute('aria-label', 'Rotate counter-clockwise');
+        rotL.addEventListener('click', () => {
+          rec.rotation = (rec.rotation - 90) % 360;
+          render();
+        });
 
+        // Rotate right button
         const rotR = document.createElement('button');
         rotR.className = 'icon-btn';
         rotR.title = 'Rotate +90°';
         rotR.textContent = '⟳';
-        rotR.addEventListener('click', ()=>{ rec.rotation = (rec.rotation + 90) % 360; render(); });
+        rotR.setAttribute('aria-label', 'Rotate clockwise');
+        rotR.addEventListener('click', () => {
+          rec.rotation = (rec.rotation + 90) % 360;
+          render();
+        });
 
+        // Delete button
         const del = document.createElement('button');
         del.className = 'icon-btn';
         del.title = 'Remove';
         del.textContent = '✕';
-        del.addEventListener('click', ()=>{ store.delete(rec.id); render(); });
+        del.setAttribute('aria-label', 'Remove image');
+        del.addEventListener('click', () => {
+          store.delete(rec.id);
+          render();
+        });
 
         small.append(rotL, rotR, del);
         meta.appendChild(small);
         card.appendChild(meta);
-
         grid.appendChild(card);
       }
+
+      // Reinitialize Sortable after render
+      if (sortable) sortable.destroy();
+      initSortable();
     }
 
-    // Create PDF
+    // PDF Generation
     [makePdfBtn, makePdfBtn2].forEach(btn => btn.addEventListener('click', createPdf));
 
-    async function createPdf(){
-      const { jsPDF } = window.jspdf; // from UMD
-      const format = sizeSel.value; // 'a4' | 'letter' | ...
-      const fixedOri = orientationSel.value !== 'auto' ? orientationSel.value : 'portrait';
-      const margin = Math.max(0, Number(marginInput.value) || 0);
-      const fit = fitSel.value; // width | height | contain | cover
-      const quality = clamp(Number(qualityInput.value) || 0.92, 0.4, 1);
-
-      const orderIds = [...grid.children].map(el => el.dataset.id).filter(id => store.has(id));
-      if(orderIds.length === 0){ alert('Please add some images first.'); return; }
-
-      // Reset progress bar
-      bar.style.width = '0%';
-
-      // Create doc with initial page; will replace orientation per page as needed
-      let doc = new jsPDF({ unit: 'mm', format, orientation: fixedOri });
-
-      for (let pageIndex = 0; pageIndex < orderIds.length; pageIndex++){
-        const id = orderIds[pageIndex];
-        const rec = store.get(id);
-        const img = await loadImage(rec.dataURL);
-        const rotatedCanvas = drawWithRotation(img, rec.rotation);
-        const imgType = (rec.type.includes('png') || rec.dataURL.startsWith('data:image/png')) ? 'PNG' : 'JPEG';
-
-        // Decide orientation if Auto
-        let pageOri = fixedOri;
-        if (orientationSel.value === 'auto'){
-          const ar = rotatedCanvas.width / rotatedCanvas.height;
-          pageOri = (ar >= 1.0) ? 'landscape' : 'portrait';
-        }
-
-        // If not first page, add a new one with computed orientation
-        if (pageIndex === 0){
-          // Recreate the document if first page orientation differs from initial
-          if (pageOri !== fixedOri && orientationSel.value === 'auto'){
-            doc = new jsPDF({ unit:'mm', format, orientation: pageOri });
-          }
-        } else {
-          doc.addPage(format, pageOri);
-        }
-
-        const pageW = doc.internal.pageSize.getWidth();
-        const pageH = doc.internal.pageSize.getHeight();
-        const targetW = pageW - margin*2;
-        const targetH = pageH - margin*2;
-
-        // Fit calculations
-        const imgWmm = 100; // temporary, we'll scale by pixels
-        const pxPerMm = rotatedCanvas.width / imgWmm; // just a ratio baseline
-        const imgAR = rotatedCanvas.width / rotatedCanvas.height;
-        let drawW = targetW, drawH = targetW / imgAR;
-
-        if (fit === 'height'){ drawH = targetH; drawW = drawH * imgAR; }
-        if (fit === 'contain'){ // fit-box
-          if (targetW/targetH < imgAR){ drawW = targetW; drawH = drawW / imgAR; }
-          else { drawH = targetH; drawW = drawH * imgAR; }
-        }
-        if (fit === 'cover'){ // fill-box and crop
-          if (targetW/targetH > imgAR){ drawW = targetW; drawH = drawW / imgAR; }
-          else { drawH = targetH; drawW = drawH * imgAR; }
-        }
-
-        const dx = (pageW - drawW) / 2;
-        const dy = (pageH - drawH) / 2;
-
-        // Re-encode as JPEG at given quality if not PNG (PNG is lossless & ignores 'quality')
-        const dataURL = (imgType === 'JPEG')
-          ? rotatedCanvas.toDataURL('image/jpeg', quality)
-          : rotatedCanvas.toDataURL('image/png');
-
-        doc.addImage(dataURL, imgType, dx, dy, drawW, drawH, undefined, (fit === 'cover') ? 'FAST' : 'MEDIUM');
-
-        bar.style.width = ((pageIndex+1) / orderIds.length * 100).toFixed(1) + '%';
-        await tick();
+    async function createPdf() {
+      if (isProcessing) return;
+      if (store.size === 0) {
+        alert('Please add some images first.');
+        return;
       }
 
-      doc.save((filenameInput.value || 'images.pdf').replace(/\s+/g,'_'));
+      try {
+        isProcessing = true;
+        setLoadingState(true);
+        
+        const { jsPDF } = window.jspdf;
+        const format = sizeSel.value;
+        const fixedOri = orientationSel.value !== 'auto' ? orientationSel.value : 'portrait';
+        const margin = Math.max(0, Number(marginInput.value) || 0);
+        const fit = fitSel.value;
+        const quality = clamp(Number(qualityInput.value) || 0.92, 0.4, 1);
+        const filename = (filenameInput.value || 'images.pdf').replace(/\s+/g, '_');
+
+        const orderIds = [...grid.children]
+          .map(el => el.dataset.id)
+          .filter(id => store.has(id));
+        
+        if (orderIds.length === 0) {
+          alert('No valid images to process.');
+          return;
+        }
+
+        // Reset progress bar
+        bar.style.width = '0%';
+
+        // Create initial PDF document
+        let doc = new jsPDF({ unit: 'mm', format, orientation: fixedOri });
+
+        for (let pageIndex = 0; pageIndex < orderIds.length; pageIndex++) {
+          const id = orderIds[pageIndex];
+          const rec = store.get(id);
+          
+          try {
+            const img = await loadImage(rec.dataURL);
+            const rotatedCanvas = drawWithRotation(img, rec.rotation);
+            const imgType = rec.type.includes('png') ? 'PNG' : 'JPEG';
+
+            // Determine page orientation if in auto mode
+            let pageOri = fixedOri;
+            if (orientationSel.value === 'auto') {
+              const ar = rotatedCanvas.width / rotatedCanvas.height;
+              pageOri = ar >= 1.0 ? 'landscape' : 'portrait';
+            }
+
+            // Handle page creation
+            if (pageIndex === 0) {
+              // Recreate document if first page orientation differs from initial
+              if (pageOri !== fixedOri && orientationSel.value === 'auto') {
+                doc = new jsPDF({ unit: 'mm', format, orientation: pageOri });
+              }
+            } else {
+              doc.addPage(format, pageOri);
+            }
+
+            // Calculate dimensions and positioning
+            const pageW = doc.internal.pageSize.getWidth();
+            const pageH = doc.internal.pageSize.getHeight();
+            const targetW = pageW - margin * 2;
+            const targetH = pageH - margin * 2;
+            const imgAR = rotatedCanvas.width / rotatedCanvas.height;
+            
+            let drawW, drawH;
+            switch (fit) {
+              case 'height':
+                drawH = targetH;
+                drawW = drawH * imgAR;
+                break;
+              case 'contain':
+                if (targetW / targetH < imgAR) {
+                  drawW = targetW;
+                  drawH = drawW / imgAR;
+                } else {
+                  drawH = targetH;
+                  drawW = drawH * imgAR;
+                }
+                break;
+              case 'cover':
+                if (targetW / targetH > imgAR) {
+                  drawW = targetW;
+                  drawH = drawW / imgAR;
+                } else {
+                  drawH = targetH;
+                  drawW = drawH * imgAR;
+                }
+                break;
+              default: // 'width'
+                drawW = targetW;
+                drawH = drawW / imgAR;
+            }
+
+            const dx = (pageW - drawW) / 2;
+            const dy = (pageH - drawH) / 2;
+
+            // Add image to PDF
+            const dataURL = imgType === 'JPEG'
+              ? rotatedCanvas.toDataURL('image/jpeg', quality)
+              : rotatedCanvas.toDataURL('image/png');
+            
+            doc.addImage(
+              dataURL,
+              imgType,
+              dx,
+              dy,
+              drawW,
+              drawH,
+              undefined,
+              fit === 'cover' ? 'FAST' : 'MEDIUM'
+            );
+
+            // Update progress
+            bar.style.width = `${((pageIndex + 1) / orderIds.length * 100).toFixed(1)}%`;
+            await tick(); // Yield to UI thread
+          } catch (error) {
+            console.error(`Error processing image ${pageIndex + 1}:`, error);
+          }
+        }
+
+        // Save the PDF
+        doc.save(filename);
+      } catch (error) {
+        console.error('Error generating PDF:', error);
+        alert('An error occurred while generating the PDF');
+      } finally {
+        isProcessing = false;
+        setLoadingState(false);
+      }
     }
 
-    function loadImage(src){
-      return new Promise((res, rej)=>{
+    function loadImage(src) {
+      return new Promise((resolve, reject) => {
         const img = new Image();
-        img.onload = () => res(img);
-        img.onerror = rej;
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error('Failed to load image'));
         img.src = src;
       });
     }
 
-    function drawWithRotation(img, deg){
-      // draw into a canvas and rotate so jsPDF gets the right pixels
-      const rad = (deg % 360) * Math.PI/180;
+    function drawWithRotation(img, deg) {
+      const rad = (deg % 360) * Math.PI / 180;
       const s = Math.abs(Math.sin(rad)), c = Math.abs(Math.cos(rad));
       const w = img.naturalWidth, h = img.naturalHeight;
-      const cw = Math.round(w*c + h*s);
-      const ch = Math.round(w*s + h*c);
+      const cw = Math.round(w * c + h * s);
+      const ch = Math.round(w * s + h * c);
+      
       const canvas = document.createElement('canvas');
-      canvas.width = cw; canvas.height = ch;
+      canvas.width = cw;
+      canvas.height = ch;
+      
       const ctx = canvas.getContext('2d');
-      ctx.translate(cw/2, ch/2);
+      ctx.translate(cw / 2, ch / 2);
       ctx.rotate(rad);
-      ctx.drawImage(img, -w/2, -h/2);
+      ctx.drawImage(img, -w / 2, -h / 2);
+      
       return canvas;
     }
 
-    const clamp = (n,min,max)=> Math.min(max, Math.max(min,n));
-    const tick = ()=> new Promise(r=> setTimeout(r, 0));
+    function setLoadingState(isLoading) {
+      document.body.classList.toggle('loading', isLoading);
+      [makePdfBtn, makePdfBtn2, pickBtn, clearBtn].forEach(btn => {
+        btn.disabled = isLoading;
+      });
+    }
 
-    // Initial empty render
+    // Utility functions
+    const clamp = (n, min, max) => Math.min(max, Math.max(min, n));
+    const tick = () => new Promise(r => setTimeout(r, 0));
+
+    // Initialization
     render();
   })();
   </script>

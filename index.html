@@ -66,8 +66,8 @@
 <body>
   <header>
     <h1>Images → PDF</h1>
-    <button class="btn" id="pickBtn">Select images</button>
-    <input id="fileInput" class="sr" type="file" accept="image/*" multiple />
+    <button class="btn" id="pickBtn">Select files</button>
+    <input id="fileInput" class="sr" type="file" accept="image/*,application/pdf" multiple />
     <button class="btn danger" id="clearBtn">Clear all</button>
     <div style="flex:1"></div>
     <button class="btn primary" id="makePdfBtn">Generate PDF</button>
@@ -75,13 +75,13 @@
 
   <div class="row">
     <main>
-      <div class="drop" id="dropZone" aria-label="Drop images here" role="region">
+      <div class="drop" id="dropZone" aria-label="Drop files here" role="region">
         <div class="inner">
           <div>
-            <h2>Drop images here or click "Select images"</h2>
+            <h2>Drop files here or click "Select files"</h2>
             <div style="font-size:12px; color:var(--muted)">Tip: drag the ⠿ handle to reorder</div>
           </div>
-          <div><span class="btn">Supported: JPG · PNG · WebP</span></div>
+          <div><span class="btn">Supported: JPG · PNG · WebP · PDF</span></div>
         </div>
         <div id="grid" class="grid" aria-live="polite"></div>
       </div>
@@ -132,6 +132,14 @@
   <!-- Load required libs -->
   <script defer src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/jspdf@3.0.1/dist/jspdf.umd.min.js"></script>
+  <!-- PDF.js for reading PDF files client-side -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.10.111/pdf.min.js"></script>
+  <script>
+    // Configure PDF.js worker (must match the version above)
+    if (window['pdfjsLib']) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.10.111/pdf.worker.min.js';
+    }
+  </script>
 
   <!-- App -->
   <script>
@@ -156,7 +164,7 @@
 
     // Constants
     const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
-    const SUPPORTED_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+    const SUPPORTED_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
 
     // State management
     const store = new Map();
@@ -198,20 +206,27 @@
           .filter(file => SUPPORTED_TYPES.includes(file.type) && file.size <= MAX_FILE_SIZE);
         
         if (validFiles.length === 0) {
-          alert('Please select valid image files (JPG, PNG, WebP) under 10MB');
+          alert('Please select valid files (JPG, PNG, WebP, PDF) under 10MB');
           return;
         }
 
         for (const file of validFiles) {
           try {
-            const dataURL = await fileToDataURL(file);
-            const rec = { 
-              id: String(idSeq++), 
-              dataURL, 
-              type: file.type || 'image/jpeg', 
-              rotation: 0 
-            };
-            store.set(rec.id, rec);
+            if (file.type === 'application/pdf') {
+              const pageRecs = await processPdfFile(file);
+              for (const rec of pageRecs) {
+                store.set(rec.id, rec);
+              }
+            } else {
+              const dataURL = await fileToDataURL(file);
+              const rec = { 
+                id: String(idSeq++), 
+                dataURL, 
+                type: file.type || 'image/jpeg', 
+                rotation: 0 
+              };
+              store.set(rec.id, rec);
+            }
           } catch (error) {
             console.error('Error processing file:', file.name, error);
           }
@@ -248,7 +263,7 @@
       if (files.length > 0) {
         handleFiles(files);
       } else {
-        alert('Please drop valid image files (JPG, PNG, WebP) under 10MB');
+        alert('Please drop valid files (JPG, PNG, WebP, PDF) under 10MB');
       }
     }
 
@@ -264,7 +279,7 @@
 
     function clearAll() {
       if (store.size === 0) return;
-      if (confirm('Are you sure you want to remove all images?')) {
+      if (confirm('Are you sure you want to remove all files?')) {
         store.clear();
         render();
       }
@@ -286,7 +301,7 @@
         const card = document.createElement('div');
         card.className = 'card';
         card.dataset.id = rec.id;
-        card.setAttribute('aria-label', `Image ${i}`);
+        card.setAttribute('aria-label', `File ${i}`);
 
         // Badge with position number
         const badge = document.createElement('div');
@@ -347,7 +362,7 @@
         del.className = 'icon-btn';
         del.title = 'Remove';
         del.textContent = '✕';
-        del.setAttribute('aria-label', 'Remove image');
+        del.setAttribute('aria-label', 'Remove file');
         del.addEventListener('click', () => {
           store.delete(rec.id);
           render();
@@ -370,7 +385,7 @@
     async function createPdf() {
       if (isProcessing) return;
       if (store.size === 0) {
-        alert('Please add some images first.');
+        alert('Please add some files first.');
         return;
       }
 
@@ -391,7 +406,7 @@
           .filter(id => store.has(id));
         
         if (orderIds.length === 0) {
-          alert('No valid images to process.');
+          alert('No valid files to process.');
           return;
         }
 
@@ -539,6 +554,45 @@
     // Utility functions
     const clamp = (n, min, max) => Math.min(max, Math.max(min, n));
     const tick = () => new Promise(r => setTimeout(r, 0));
+
+    // PDF handling: convert each page to an image for preview and PDF generation
+    async function processPdfFile(file) {
+      if (!window['pdfjsLib']) {
+        throw new Error('PDF support is not available (pdf.js failed to load)');
+      }
+      const buf = await file.arrayBuffer();
+      const loadingTask = pdfjsLib.getDocument({ data: buf });
+      const pdf = await loadingTask.promise;
+
+      const pageRecs = [];
+      // Render each page to a canvas and store as JPEG dataURL
+      for (let p = 1; p <= pdf.numPages; p++) {
+        const page = await pdf.getPage(p);
+        // Base viewport at scale 1, then upscale a bit for better quality
+        const viewport = page.getViewport({ scale: 1.5 });
+
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = Math.floor(viewport.width);
+        canvas.height = Math.floor(viewport.height);
+
+        const renderContext = { canvasContext: ctx, viewport };
+        await page.render(renderContext).promise;
+
+        const dataURL = canvas.toDataURL('image/jpeg', 0.92);
+        pageRecs.push({
+          id: String(idSeq++),
+          dataURL,
+          type: 'image/jpeg',
+          rotation: 0,
+        });
+
+        // free canvas memory between pages
+        canvas.width = 0; canvas.height = 0;
+      }
+
+      return pageRecs;
+    }
 
     // Initialization
     render();
